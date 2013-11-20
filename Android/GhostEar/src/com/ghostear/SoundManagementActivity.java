@@ -9,8 +9,11 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+
 import com.ghostear.R;
+
 import android.app.Activity;
 import android.media.MediaRecorder;
 import android.os.Bundle;
@@ -27,7 +30,7 @@ import android.view.View;
 import android.widget.Button;
 
 public class SoundManagementActivity extends Activity {
-	final static int SAMPLING_RATE = 11025;
+	final static int SAMPLING_RATE = 16000;
 	AudioRecord audioRec = null;
 	Button btn = null;
 	boolean bIsRecording = false;
@@ -45,12 +48,12 @@ public class SoundManagementActivity extends Activity {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.main);
 
-		// calcukate buffer size
+		// Calculation of the buffer size
 		bufSize = AudioRecord.getMinBufferSize(
 				SAMPLING_RATE,
 				AudioFormat.CHANNEL_CONFIGURATION_MONO,
 				AudioFormat.ENCODING_PCM_16BIT) * 2;
-		// AudioRecordの作�?
+		// Creating AudioRecord
 		audioRec = new AudioRecord(
 				MediaRecorder.AudioSource.MIC, 
 				SAMPLING_RATE,
@@ -81,16 +84,15 @@ public class SoundManagementActivity extends Activity {
 		// Start Recoding
 		Log.v("AudioRecord", "startRecording");
 
-		// 録音用ファイル取得�? SDカード状態チェ�?��略
+		// get file path
 		File recFile = new File(Environment.getExternalStorageDirectory().getAbsolutePath() + "/rec.raw");
 		Log.v("File", Environment.getExternalStorageDirectory().getAbsolutePath() + "/rec.raw");
 
 		try {
 			recFile.createNewFile();
-			// ファイル書き込み�? 例外�?�?��
+			// write file
 			out = new FileOutputStream(recFile);
 		} catch (IOException e) {
-			// TODO 自動生成された catch ブロ�?��
 			e.printStackTrace();
 		}
 
@@ -100,48 +102,57 @@ public class SoundManagementActivity extends Activity {
 		new Thread(new Runnable() {
 			public void run() {
 				byte buf[] = new byte[bufSize];
+				int counter = 0;
+
 				while (bIsRecording) {
 					// Read recoding data
 					audioRec.read(buf, 0, buf.length);							
 					Log.v("AudioRecord", "read " + buf.length + " bytes");
+
+					// change byte order
+			        ByteBuffer buffer = ByteBuffer.allocate(buf.length);
+			        buffer.put(buf);
+
+			        buffer.order(ByteOrder.BIG_ENDIAN);
+			        
+			        buf = buffer.array();
+			        
+					//send sound data 
 					SoundManagementNative.sendSoundData(buf, buf.length);
-					//					try {
-					//						out.write(buf);
-					//					} catch (IOException e) {
-					//						// TODO 自動生成された catch ブロ�?��
-					//						e.printStackTrace();
-					//					}
+
+					try {
+						out.write(buf);
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
 				}
 
 				try {
 					out.close();
 				} catch (IOException e) {
-					// TODO 自動生成された catch ブロ�?��
 					e.printStackTrace();
 				}
 
-				//				try {
-				//					addWavHeader();
-				//					Log.v("####", "addwav");
-				//				} catch (IOException e) {
-				//					// TODO 自動生成された catch ブロ�?��
-				//					e.printStackTrace();
-				//				}
+				try {
+					//change the file format (raw -> wav)
+					addWavHeader();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
 			}
 		}).start();
 	}
 
 	@Override
 	protected void onDestroy() {
-		// TODO Auto-generated method stub
 		super.onDestroy();
 		Log.v("AudioRecord", "onDestroy");
 		bIsRecording = false;
-		
+
 		// Stop Recoding
 		Log.v("AudioRecord", "stop");
 		audioRec.stop();
-		
+
 		// release
 		audioRec.release();
 
@@ -152,56 +163,52 @@ public class SoundManagementActivity extends Activity {
 
 
 
-	//WAVヘッ�?をつけて保�?
-	//�?��例外�?�?�� チェ�?��処�?��
+	//Save as a WAV header
 	public void addWavHeader() throws IOException {
-		// 録音したファイル
+		// The recorded file
 		File recFile = new File(Environment.getExternalStorageDirectory().getAbsolutePath() + "/rec.raw");
-		// WAVファイル
+		// WAV file
 		File wavFile = new File(Environment.getExternalStorageDirectory().getAbsolutePath() + "/rec.wav");
 
 		wavFile.createNewFile();
 
 
-		// ストリー�?
+		// stream
 		FileInputStream in = new FileInputStream(recFile);
 		FileOutputStream outStream = new FileOutputStream(wavFile);
 
-		// ヘッ�?作�?�? サンプルレー�?8kHz
+		// create header
 		byte[] header = createHeader(SAMPLING_RATE, (int)recFile.length());
-		// ヘッ�?の書き�?�?
+		// write header
 		outStream.write(header);
 
-		// 録音したファイルのバイトデータ読み込み
+		// read byte data 
 		int n = 0,offset = 0;
 		byte[] buffer = new byte[(int)recFile.length()];
 		while (offset < buffer.length && (n = in.read(buffer, offset, buffer.length - offset)) >= 0) {
 			offset += n;
 		}
-		// バイトデータ書き込み
+		// write byte data
 		outStream.write(buffer);
 
-		// 終�?
+		// end
 		in.close();
 		outStream.close();
 	}
 
-	//Wavファイルのヘッ�?を作�?する??PCM16ビッ�? モノラル??
-	//sampleRate�? サンプルレー�?
-	//datasize �??タサイズ
-	//これなんかもっとキレイに書けると思う�? 。�?? Ringroidのソースなんかキレイかも
+	//create header of WAV
 	public static byte[] createHeader(int sampleRate, int datasize) {
 		byte[] byteRIFF = {'R', 'I', 'F', 'F'};
-		byte[] byteFilesizeSub8 = intToBytes((datasize + 36));  // ファイルサイズ-8バイト数
+		byte[] byteFilesizeSub8 = intToBytes((datasize + 36));  // file size -8 byte
 		byte[] byteWAVE = {'W', 'A', 'V', 'E'};
 		byte[] byteFMT_ = {'f', 'm', 't', ' '};
-		byte[] byte16bit = intToBytes(16); // fmtチャンクのバイト数
-		byte[] byteSamplerate = intToBytes(sampleRate);  // サンプルレー�?
-		byte[] byteBytesPerSec = intToBytes(sampleRate * 2); // バイ�?/�? = サンプルレー�? x 1チャンネル x 2バイ�?
-		byte[] bytePcmMono = {0x01, 0x00, 0x01, 0x00}; // フォーマッ�?ID 1 =リニアPCM�? ,�? チャンネル 1 = モノラル
-		byte[] byteBlockBit = {0x02, 0x00, 0x10, 0x00}; // ブロ�?��サイズ2バイ�? サンプルあたり�?ビット数16ビッ�?
+		byte[] byte16bit = intToBytes(16); // fmt chank
+		byte[] byteSamplerate = intToBytes(sampleRate);  // sample rate
+		byte[] byteBytesPerSec = intToBytes(sampleRate * 2); // byte / seconds = sample rate x 1 channel x 2byte
+		byte[] bytePcmMono = {0x01, 0x00, 0x01, 0x00}; // format ID 1 = LPCM , channel 1 = MONORAL
+		byte[] byteBlockBit = {0x02, 0x00, 0x10, 0x00}; // Block size 2byte 
 		byte[] byteDATA = {'d', 'a', 't', 'a'};
-		byte[] byteDatasize = intToBytes(datasize);  // �??タサイズ
+		byte[] byteDatasize = intToBytes(datasize);  // data size
 
 		ByteArrayOutputStream outArray = new ByteArrayOutputStream();
 		try {
@@ -221,7 +228,7 @@ public class SoundManagementActivity extends Activity {
 		}
 		return outArray.toByteArray();
 	}
-	//int�?32ビットデータをリトルエン�?��アンのバイト�?列にする
+	//make change little endian
 	public static byte[] intToBytes(int value) {
 		byte[] bt = new byte[4];
 		bt[0] = (byte)(value & 0x000000ff);
@@ -230,4 +237,7 @@ public class SoundManagementActivity extends Activity {
 		bt[3] = (byte)((value & 0xff000000) >> 24);
 		return bt;
 	}
-}
+
+
+
+	}
